@@ -17,58 +17,68 @@ class Program
 {
     static void Main()
     {
-        // // shows the structure of the object
-        // Console.WriteLine(KeyTest.__JsonStructure);
+        ShowExample();
 
-        // // breaks down the structure to only show the tables and their columns
-        // var Tables = KeyTest.GetTableInStructure();
-        // if (Tables is not null) {
-        //     Console.WriteLine("<Tables>");
-        //     foreach(var table in Tables)
-        //     {
-        //         Console.WriteLine($"{table}, ");
-        //         var Columns = KeyTest.GetColumnInStructure(table);
-        //         if (Columns is not null)
-        //         {
-        //             Console.WriteLine("\t<Columns>");
-        //             foreach(var column in Columns)
-        //             {
-        //                 Console.WriteLine($"\t{column}, ");
-        //             }
-        //             Console.WriteLine("\t</Columns>");
-        //         }
-        //         else
-        //         {
-        //             Console.WriteLine("No Columns");
-        //         }
-        //     }
-        //     Console.WriteLine("</Tables>");
-        // } else
-        // {
-        //     Console.WriteLine("No Tables");
-        // }
+        ShowExampleForeign();
+    }
 
 
-        // /* test create */
-        // Console.WriteLine("------ KEY TEST CREATE ------");
-        // var random = new Random();
-        // for (int i = 0; i < 6; i++)
-        // {
-        //     /* smol data for database */
+    static void ShowExample()
+    {
+        // shows the structure of the object
+        Console.WriteLine(Example.__JsonStructure);
+
+        // breaks down the structure to only show the tables and their columns
+        var Tables = Example.GetTableInStructure();
+        if (Tables is not null) 
+        {
+            Console.WriteLine("<Tables>");
+            foreach(var table in Tables)
+            {
+                Console.WriteLine($"{table}, ");
+                var Columns = Example.GetColumnInStructure(table);
+                if (Columns is not null)
+                {
+                    Console.WriteLine("\t<Columns>");
+                    foreach(var column in Columns)
+                    {
+                        Console.WriteLine($"\t{column}, ");
+                    }
+                    Console.WriteLine("\t</Columns>");
+                }
+                else
+                {
+                    Console.WriteLine("No Columns");
+                }
+            }
+            Console.WriteLine("</Tables>");
+        }
+        else
+        {
+            Console.WriteLine("No Tables");
+        }
+
+
+        /* test create */
+        Console.WriteLine("------ KEY TEST CREATE ------");
+        var random = new Random();
+        for (int i = 0; i < 6; i++)
+        {
+            /* smol data for database */
             
-        //     new KeyTest.Action<KeyTest.Table1>()
-        //         .Command(
-        //             $"""
-        //             INSERT INTO #Table (#1, #2)
-        //             VALUES (@1, @2)
-        //             """
-        //         )
-        //         .Parse<KeyTest.Table1.Text>("#1", "@1", random.GetHexString(10))
-        //         .Parse<KeyTest.Table1.Number>("#2", "@2", random.Next(100))
-        //         .Execute();
-        // }
-        // KeyTest.ShowAllTableInDatabase();
-        // Console.WriteLine("-----------------------------");
+            new Example.Action<Example.Table1>()
+                .Command(
+                    $"""
+                    INSERT INTO #Table (#1, #2)
+                    VALUES (@1, @2)
+                    """
+                )
+                .Parse<Example.Table1.Text>("#1", "@1", random.GetHexString(10))
+                .Parse<Example.Table1.Number>("#2", "@2", random.Next(100))
+                .Execute();
+        }
+        Example.ShowAllTableInDatabase();
+        Console.WriteLine("-----------------------------");
 
 
         /* test update */
@@ -132,6 +142,90 @@ class Program
             Console.WriteLine("select is null... something went wrong");
         }
 
+        Console.WriteLine("-----------------------------");
+    }
+
+    static void ShowExampleForeign()
+    {
+        // shows the structure of the object
+        Console.WriteLine(ExampleForeign.__JsonStructure);
+
+        // breaks down the structure to only show the tables and their columns
+        var Tables = ExampleForeign.GetTableInStructure();
+        if (Tables is not null) {
+            foreach(var table in Tables)
+            {
+                Console.WriteLine($"{table}, ");
+                var Columns = ExampleForeign.GetColumnInStructure(table);
+                if (Columns is not null)
+                {
+                    foreach(var column in Columns)
+                    {
+                        Console.WriteLine($"\t{column}, ");
+                    }
+                }
+                else
+                {
+                    Console.WriteLine("No Columns");
+                }
+            }
+        } else
+        {
+            Console.WriteLine("No Tables");
+        }
+
+        /* test create */
+        Console.WriteLine("------ KEY TEST CREATE ------");
+        var random = new Random();
+        for (int i = 0; i < 6; i++)
+        {
+            /* smol data for database */
+            
+            new ExampleForeign.Action<ExampleForeign.Table1>()
+                .Command(
+                    $"""
+                    INSERT INTO #Table (#1)
+                    VALUES (@1)
+                    """
+                )
+                .Parse<ExampleForeign.Table1.Number>("#1", "@1", random.Next(100))
+                .Execute();
+        }
+        for (int i = 0; i < 6; i++)
+        {
+            for (int j = 0; j < 2; j++)
+            {
+                new ExampleForeign.Action<ExampleForeign.Table2>()
+                .Command(
+                    $"""
+                    INSERT INTO #Table (#1, #2)
+                    VALUES (@1, @2)
+                    """
+                )
+                .Parse<ExampleForeign.Table2.Reference>("#1", "@1", i + 1)
+                .Parse<ExampleForeign.Table2.Value>("#2", "@2", random.GetHexString(10))
+                .Execute();
+            }
+        }
+        ExampleForeign.ShowAllTableInDatabase();
+        Console.WriteLine("-----------------------------");
+
+
+        /* test delete */
+        Console.WriteLine("------ KEY TEST DELETE ------");
+        for (int i = 0; i < 6; i+=2) {
+            new ExampleForeign.Action<ExampleForeign.Table1>()
+                .Command(
+                    $"""
+                    DELETE
+                    FROM #Table
+                    WHERE #1=@1
+                    """
+                )
+                .ParseId("#1", "@1", i+1)
+                .Execute();
+            ExampleForeign.ShowAllTableInDatabase();
+        }
         Console.WriteLine("-----------------------------");
     }
 }
