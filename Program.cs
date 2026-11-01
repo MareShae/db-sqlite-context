@@ -17,51 +17,45 @@ class Program
 {
     static void Main()
     {
-        ShowExample();
+        // delete the previous .db
+        if (File.Exists(Example.__Source))
+        {
+            Console.WriteLine($"delete {Example.__Source} for example");
+            File.Delete(Example.__Source);
+        }
 
-        ShowExampleForeign();
-    }
-
-
-    static void ShowExample()
-    {
         // shows the structure of the object
         Console.WriteLine(Example.__JsonStructure);
 
         // breaks down the structure to only show the tables and their columns
         var Tables = Example.GetTableInStructure();
-        if (Tables is not null) 
-        {
-            Console.WriteLine("<Tables>");
+        if (Tables is not null) {
             foreach(var table in Tables)
             {
                 Console.WriteLine($"{table}, ");
                 var Columns = Example.GetColumnInStructure(table);
                 if (Columns is not null)
                 {
-                    Console.WriteLine("\t<Columns>");
                     foreach(var column in Columns)
                     {
                         Console.WriteLine($"\t{column}, ");
                     }
-                    Console.WriteLine("\t</Columns>");
                 }
                 else
                 {
                     Console.WriteLine("No Columns");
                 }
             }
-            Console.WriteLine("</Tables>");
-        }
-        else
+        } else
         {
             Console.WriteLine("No Tables");
         }
 
+        var random = new Random();
 
         /* test create */
         Console.WriteLine("------ KEY TEST CREATE ------");
-        var random = new Random();
+        Console.WriteLine("create items for Table1");
         for (int i = 0; i < 6; i++)
         {
             /* smol data for database */
@@ -73,9 +67,26 @@ class Program
                     VALUES (@1, @2)
                     """
                 )
-                .Parse<Example.Table1.Text>("#1", "@1", random.GetHexString(10))
-                .Parse<Example.Table1.Number>("#2", "@2", random.Next(100))
+                .Parse(Example.Table1.Text, "#1", "@1", random.GetHexString(10))
+                .Parse(Example.Table1.Number, "#2", "@2", random.Next(100))
                 .Execute();
+        }
+        Console.WriteLine("create items for Table2 with reference(foreign) keys");
+        for (int i = 0; i < 6; i++)
+        {
+            for (int j = 0; j < 2; j++)
+            {
+                new Example.Action<Example.Table2>()
+                .Command(
+                    $"""
+                    INSERT INTO #Table (#1, #2)
+                    VALUES (@1, @2)
+                    """
+                )
+                .Parse(Example.Table2.Reference, "#1", "@1", i + 1)
+                .Parse(Example.Table2.Randstr, "#2", "@2", random.GetHexString(10))
+                .Execute();
+            }
         }
         Example.ShowAllTableInDatabase();
         Console.WriteLine("-----------------------------");
@@ -83,34 +94,40 @@ class Program
 
         /* test update */
         Console.WriteLine("------ KEY TEST UPDATE ------");
-        new Example.Action<Example.Table1>()
-            .Command(
-                $"""
-                UPDATE #Table
-                SET #1=@1, #2=@2
-                WHERE #3=@3
-                """
-            )
-            .Parse<Example.Table1.Text>("#1", "@1", "NotARandomString")
-            .Parse<Example.Table1.Number>("#2", "@2", -2428896545)
-            .ParseId("#3", "@3", 3)
-            .Execute();
+        Console.WriteLine("update odd for Table1");
+        for (int i = 1; i <= 6; i+=2) {
+            new Example.Action<Example.Table1>()
+                .Command(
+                    $"""
+                    UPDATE #Table
+                    SET #1=@1, #2=@2
+                    WHERE #3=@3
+                    """
+                )
+                .Parse(Example.Table1.Text, "#1", "@1", $"Random{random.GetHexString(4)}")
+                .Parse(Example.Table1.Number, "#2", "@2", -random.Next(10000000))
+                .ParseId("#3", "@3", i)
+                .Execute();
+        }
         Example.ShowAllTableInDatabase();
         Console.WriteLine("-----------------------------");
 
 
         /* test delete */
         Console.WriteLine("------ KEY TEST DELETE ------");
-        new Example.Action<Example.Table1>()
-            .Command(
-                $"""
-                DELETE
-                FROM #Table
-                WHERE #1=@1
-                """
-            )
-            .ParseId("#1", "@1", 2)
-            .Execute();
+        Console.WriteLine("delete even for Table1");
+        for (int i = 2; i <= 6; i+=2) {
+            new Example.Action<Example.Table1>()
+                .Command(
+                    $"""
+                    DELETE
+                    FROM #Table
+                    WHERE #1=@1
+                    """
+                )
+                .ParseId("#1", "@1", i)
+                .Execute();
+        }
         Example.ShowAllTableInDatabase();
         Console.WriteLine("-----------------------------");
 
@@ -125,8 +142,8 @@ class Program
                 """
             )
             .Readout(["#1", "#2"])
-            .Format<Example.Table1.Text>("#1")
-            .Format<Example.Table1.Number>("#2")
+            .Format(Example.Table1.Text, "#1")
+            .Format(Example.Table1.Number, "#2")
             .Execute();
         if (select is not null)
         {
@@ -145,88 +162,5 @@ class Program
         Console.WriteLine("-----------------------------");
     }
 
-    static void ShowExampleForeign()
-    {
-        // shows the structure of the object
-        Console.WriteLine(ExampleForeign.__JsonStructure);
-
-        // breaks down the structure to only show the tables and their columns
-        var Tables = ExampleForeign.GetTableInStructure();
-        if (Tables is not null) {
-            foreach(var table in Tables)
-            {
-                Console.WriteLine($"{table}, ");
-                var Columns = ExampleForeign.GetColumnInStructure(table);
-                if (Columns is not null)
-                {
-                    foreach(var column in Columns)
-                    {
-                        Console.WriteLine($"\t{column}, ");
-                    }
-                }
-                else
-                {
-                    Console.WriteLine("No Columns");
-                }
-            }
-        } else
-        {
-            Console.WriteLine("No Tables");
-        }
-
-        /* test create */
-        Console.WriteLine("------ KEY TEST CREATE ------");
-        var random = new Random();
-        for (int i = 0; i < 6; i++)
-        {
-            /* smol data for database */
-            
-            new ExampleForeign.Action<ExampleForeign.Table1>()
-                .Command(
-                    $"""
-                    INSERT INTO #Table (#1)
-                    VALUES (@1)
-                    """
-                )
-                .Parse<ExampleForeign.Table1.Number>("#1", "@1", random.Next(100))
-                .Execute();
-        }
-        for (int i = 0; i < 6; i++)
-        {
-            for (int j = 0; j < 2; j++)
-            {
-                new ExampleForeign.Action<ExampleForeign.Table2>()
-                .Command(
-                    $"""
-                    INSERT INTO #Table (#1, #2)
-                    VALUES (@1, @2)
-                    """
-                )
-                .Parse<ExampleForeign.Table2.Reference>("#1", "@1", i + 1)
-                .Parse<ExampleForeign.Table2.Value>("#2", "@2", random.GetHexString(10))
-                .Execute();
-            }
-        }
-        ExampleForeign.ShowAllTableInDatabase();
-        Console.WriteLine("-----------------------------");
-
-
-        /* test delete */
-        Console.WriteLine("------ KEY TEST DELETE ------");
-        for (int i = 0; i < 6; i+=2) {
-            new ExampleForeign.Action<ExampleForeign.Table1>()
-                .Command(
-                    $"""
-                    DELETE
-                    FROM #Table
-                    WHERE #1=@1
-                    """
-                )
-                .ParseId("#1", "@1", i+1)
-                .Execute();
-            ExampleForeign.ShowAllTableInDatabase();
-        }
-        Console.WriteLine("-----------------------------");
-    }
 }
 

@@ -1,74 +1,35 @@
+using System.ComponentModel.DataAnnotations.Schema;
 using System.Reflection;
+using System.Runtime.CompilerServices;
 using System.Text.Json;
 using System.Text.Json.Nodes;
 using Microsoft.Data.Sqlite;
 
-interface IDbSqliteContext
-{
-    static SqliteConnection? __SqliteConnection {get;}
-    static public JsonObject? __JsonStructure  {get; }
-}
+// TODO: documentation and removing redundancy
 
-/// <summary>
-/// table contexts are members of the main context
-/// 
-/// anything under main that does not implement this interface
-/// is not recognised as a table
-/// </summary>
-interface IDbSqliteContextTable {}
+public class DbSqliteContextTableAttribute: Attribute {}
 
+public class DbSqliteContextColumnAttribute: Attribute {}
 
-/// <summary>
-/// column contexts are members of the table contexts
-/// 
-/// anything under table that does not implement this interface
-/// is not recognized as a column
-/// </summary>
-interface IDbSqliteContextColumn
-{
-    static public SqliteType DbType {get;}
-}
+public class DbSqliteContextForeignAttribute<T>: Attribute {}
 
-
-/// <summary>
-/// add foreign keys to the context
-/// 
-/// inherits from the base column context
-/// 
-/// takes the record of the foreign column
-/// </summary>
-interface IDbSqliteContextColumnForeign<T1>: IDbSqliteContextColumn
-where T1: IDbSqliteContextTable
-{}
-
-interface IDbSqliteContextColumnForeign<T1, T2>: IDbSqliteContextColumn
-where T1: IDbSqliteContextTable
-where T2: IDbSqliteContextColumn 
-{}
 
 
 /** implement Architecture as base class for inhertance **/
 
-record DbSqliteContext<TChild>: IDbSqliteContext
+record DbSqliteContext<TChild>
 {
     /* these are constants for JsonObject fields */
-    static readonly string TYPE = "TYPE";
-    static readonly string PROPERTIES = "PROPERTIES";
-    static readonly string FIELDS = "FIELDS";
-    static readonly string NESTEDTYPES = "NESTEDTYPES";
-    // under TYPE
-    static readonly string BASE = "BASE";
-    static readonly string LAYER = "LAYER";
-    static readonly string GENERIC = "GENERIC";
-    static readonly string TABLE = "TABLE";
-    static readonly string COLUMN = "COLUMN";
+    static readonly string TYPE = nameof(TYPE);
+    static readonly string DEFAULT = nameof(DEFAULT);
+    static readonly string REFERENCE = nameof(REFERENCE);
     
-
     /* special column */
     static readonly string Id = "Id";
 
 
-    static public SqliteConnection? __SqliteConnection {
+    static public string __Source
+    {
         private set
         {
             field = value;
@@ -77,9 +38,23 @@ record DbSqliteContext<TChild>: IDbSqliteContext
         {
             if (field is null)
             {
-                string Source = $"{typeof(TChild).Name}.db";
+                field = $"{typeof(TChild).Name}.db";
+            }
+            return field;
+        }
+    }
+
+    static public SqliteConnection __SqliteConnection {
+        private set
+        {
+            field = value;
+        }
+        get
+        {
+            if (field is null)
+            {
                 field = new SqliteConnection (
-                    $"Data Source={Source}; Foreign Keys=True"
+                    $"Data Source={__Source}; Foreign Keys=True"
                 );
                 field.Open();
 
@@ -96,18 +71,16 @@ record DbSqliteContext<TChild>: IDbSqliteContext
     /// <summary>
     /// has a structure similar to:
     /// {
-    ///     "Type": IDbSqliteContext | IDbSqliteContextTable | IDbSqliteContextColumn,
-    ///     "Properties": {...},
-    ///     "Fields": {...},
-    ///     "NestedTypes": {
-    ///         "Type": ...,
-    ///         "Properties": {...},
-    ///         "Fields": {...},
-    ///         "NestedTypes": {...}
+    ///     "Class": {
+    ///         "Table": {
+    ///             "Column": {
+    ///                 ...
+    ///             }
+    ///         }
     ///     }
     /// }
     /// </summary>
-    static public JsonObject? __JsonStructure  {
+    static public JsonObject __JsonStructure  {
         private set
         {
             field = value;
@@ -118,77 +91,198 @@ record DbSqliteContext<TChild>: IDbSqliteContext
                 field = new JsonObject();
 
                 Type type = typeof(TChild);
-                field[type.Name] = Structure(type);
+                field[type.Name] = Extract(type);
             }
 
             return field;
         }
     }
-    
 
 
     /// <summary>
-    /// checks if the table is in the database
+    /// extract the database structure that implement
+    ///     + IDbSqliteContext
+    ///     + IDbSqliteContextTable
+    ///     + IDbSqliteContextColumn
     /// </summary>
     /// 
-    /// <param name="Table"></param>
+    /// <param name="type"></param>
     /// 
     /// <returns></returns>
-    static private bool IsInDatabase(string Table)
+    static private JsonObject? Extract(Type type)
     {
-        if (__SqliteConnection is null) return false;
-        
-        using var command = __SqliteConnection.CreateCommand();
-        command.CommandText = $"""
-        SELECT name
-        FROM sqlite_master
-        WHERE type='table' AND name='{Table}'
-        """;
-        using var reader = command.ExecuteReader();
-        while (reader.Read())
+        var json = new JsonObject();
+
+        // assert type
+        if (! ExtractType(type)) return null;
+        // assert table
+        json = ExtractTables(json, type);
+        // assert column
+        json = ExtractColumns(json, type);
+
+
+        return json;
+    }
+
+
+    /// <summary>
+    /// checks only for one of the accepted 
+    ///     + IDbSqliteContext
+    ///     + IDbSqliteContextTable
+    ///     + IDbSqliteContextColumn
+    /// </summary>
+    /// <param name="type"></param>
+    /// <returns></returns>
+    static private bool ExtractType(Type type)
+    {
+        if (type.IsSubclassOf(typeof(DbSqliteContext<TChild>)))
         {
             return true;
         }
-        
+
+        if (type.IsDefined(typeof(DbSqliteContextTableAttribute), false))
+        {
+            return true;
+        }
+
+        if (type.IsDefined(typeof(DbSqliteContextColumnAttribute), false))
+        {
+            return true;
+        }
+
         return false;
     }
 
 
     /// <summary>
-    /// checks if a column is under the associated table in the database
+    /// extracts nestedtypes with Table attributes
+    /// </summary>
+    /// <param name="type"></param>
+    /// <returns></returns>
+    static private JsonObject ExtractTables(JsonObject json, Type type)
+    {
+        // specifically targets tables
+        BindingFlags bindingFlags = BindingFlags.Public | BindingFlags.Instance;
+
+        foreach (var n in type.GetNestedTypes(bindingFlags))
+        {
+            // check if the nested type is specifically a Table
+            if (! n.IsDefined(typeof(DbSqliteContextTableAttribute), false)) continue;
+
+            var tmp = Extract(n);
+            if (tmp is not null) {
+                json[n.Name] = Extract(n);
+            }
+        }
+        return json;
+    }
+
+    
+    /// <summary>
+    /// extracts the properties of the class
+    /// 
+    /// extracts the fields of the class
     /// </summary>
     /// 
-    /// <param name="Table"></param>
-    /// <param name="Column"></param>
+    /// <param name="type"></param>
     /// 
     /// <returns></returns>
-    static private (bool _Name, bool _Type)? IsInDatabase(string Table, string Column)
+    static private JsonObject ExtractColumns(JsonObject json, Type type)
     {
-        // check if the Table/Column exist in the Structure
-        if (FetchFromStructure(Table, Column) is null) return null;
-        // check if the Table exists in Database
-        if (! IsInDatabase(Table)) return null;
+        BindingFlags bindingFlags = 
+            BindingFlags.Public |
+            BindingFlags.Static |
+            BindingFlags.Instance;
 
-        if (__SqliteConnection is null) return null;
-
-        using var command = __SqliteConnection.CreateCommand();
-
-        command.CommandText = $"""
-        PRAGMA table_info({Table})
-        """;
-
-        using var reader = command.ExecuteReader();
-        while (reader.Read())
+        foreach (var p in type.GetProperties(bindingFlags))
         {
-            if (Column == reader.GetString(1)) {
-                return (
-                    true,   // true for column name
-                    SqliteTypeOf(Table, Column).ToString()!.ToLower() == reader.GetString(2).ToLower()
-                );
+            if (! p.IsDefined(typeof(DbSqliteContextColumnAttribute), false)) continue;
+            throw new NotSupportedException("Properties");
+            // TODO: use for default, rn its null, lol
+        }
+        foreach (var f in type.GetFields(bindingFlags))
+        {
+            if (! f.IsDefined(typeof(DbSqliteContextColumnAttribute), false)) continue;
+            json[f.Name] = ExtractDetails(f);
+        }
+
+        return json;
+    }
+
+
+    static private JsonObject ExtractDetails (FieldInfo type)
+    {
+        var json = new JsonObject();
+        json[DEFAULT] = null;
+
+        var attr = type.GetCustomAttribute(typeof(DbSqliteContextForeignAttribute<>));
+        if (attr is not null)
+        {
+            Type subType = attr.GetType();
+            var args = subType.GetGenericArguments()[0];
+
+            json[REFERENCE] = JsonSerializer.SerializeToNode(
+                args.FullName!
+                .Replace("{", "")
+                .Replace("}", "")
+            );
+        }
+        else
+        {
+            // TODO: off-load to static methods, possible extensive type inclusions
+            if (type.FieldType == typeof(int) ||
+                type.FieldType == typeof(long) ||
+                type.FieldType == typeof(int?) ||
+                type.FieldType == typeof(long?))
+            {
+                json[TYPE] = JsonSerializer.SerializeToNode(SqliteType.Integer);
+            }
+            else if (type.FieldType == typeof(char) ||
+                type.FieldType == typeof(string) ||
+                type.FieldType == typeof(char?))
+            {
+                json[TYPE] = JsonSerializer.SerializeToNode(SqliteType.Text);
+            }
+            else if (type.FieldType == typeof(float) ||
+                type.FieldType == typeof(double) ||
+                type.FieldType == typeof(float?) ||
+                type.FieldType == typeof(double?))
+            {
+                json[TYPE] = JsonSerializer.SerializeToNode(SqliteType.Real);
+            }
+            else if (type.FieldType == typeof(byte[]))
+            {
+                json[TYPE] = JsonSerializer.SerializeToNode(SqliteType.Blob);
             }
         }
 
-        return null;
+        return json;
+    }
+
+
+    /// <summary>
+    /// get just the names of the tables
+    /// </summary>
+    /// <returns></returns>
+    static public string[] GetTableInStructure()
+    {
+
+        var json = FetchFromStructure();
+
+        return json.Select(p => p.Key).ToArray();
+    }
+
+
+    /// <summary>
+    /// get the names of the columns of an associated table
+    /// </summary>
+    /// <param name="Table"></param>
+    /// <returns></returns>
+    static public string[] GetColumnInStructure(string Table)
+    {
+        var json = FetchFromStructure(Table);
+
+        return json.Select(p => p.Key).ToArray();
     }
 
 
@@ -197,8 +291,6 @@ record DbSqliteContext<TChild>: IDbSqliteContext
     /// </summary>
     static public void ShowAllTableInDatabase()
     {
-        if (__SqliteConnection is null) return;
-
         // get the table names in the database
         
         using var commandI = __SqliteConnection.CreateCommand();
@@ -276,44 +368,63 @@ record DbSqliteContext<TChild>: IDbSqliteContext
 
 
     /// <summary>
-    /// get just the names of the tables
+    /// checks if the table is in the database
     /// </summary>
+    /// 
+    /// <param name="Table"></param>
+    /// 
     /// <returns></returns>
-    static public string[] GetTableInStructure()
+    static private bool IsInDatabase(string Table)
     {
-
-        var json = FetchFromStructure();
-
-        // check if it has the NESTEDTYPES container
-        if (! json.ContainsKey(NESTEDTYPES)) {
-            throw new KeyNotFoundException(NESTEDTYPES);
+        using var command = __SqliteConnection.CreateCommand();
+        command.CommandText = $"""
+        SELECT name
+        FROM sqlite_master
+        WHERE type='table' AND name='{Table}'
+        """;
+        using var reader = command.ExecuteReader();
+        while (reader.Read())
+        {
+            return true;
         }
-
-        // enter the NESTEDTYPES container
-        json = (JsonObject) json[NESTEDTYPES]!;
-
-        return json.Select(p => p.Key).ToArray();
+        
+        return false;
     }
 
 
     /// <summary>
-    /// get the names of the columns of an associated table
+    /// checks if a column is under the associated table in the database
     /// </summary>
+    /// 
     /// <param name="Table"></param>
+    /// <param name="Column"></param>
+    /// 
     /// <returns></returns>
-    static public string[] GetColumnInStructure(string Table)
+    static private (bool _Name, bool _Type)? IsInDatabase(string Table, string Column)
     {
-        var json = FetchFromStructure(Table);
+        // check if the Table/Column exist in the Structure
+        _ = FetchFromStructure(Table, Column);
+        // check if the Table exists in Database
+        if (! IsInDatabase(Table)) return null;
 
-        // check if ${table} has the NESTEDTYPES container
-        if (! json.ContainsKey(NESTEDTYPES)) {
-            throw new KeyNotFoundException(NESTEDTYPES);
+        using var command = __SqliteConnection.CreateCommand();
+
+        command.CommandText = $"""
+        PRAGMA table_info({Table})
+        """;
+
+        using var reader = command.ExecuteReader();
+        while (reader.Read())
+        {
+            if (Column == reader.GetString(1)) {
+                return (
+                    true,   // true for column name
+                    SqliteTypeOf(Table, Column).ToString()!.ToLower() == reader.GetString(2).ToLower()
+                );
+            }
         }
 
-        // enter the NESTEDTYPES container
-        json = (JsonObject) json[NESTEDTYPES]!;
-
-        return json.Select(p => p.Key).ToArray();
+        return null;
     }
 
 
@@ -328,15 +439,13 @@ record DbSqliteContext<TChild>: IDbSqliteContext
     /// <returns></returns>
     static private bool MirrorToDatabase(string Table)
     {
-        if (__SqliteConnection is null) return false;
-
         // nothing to do if it is already in the database
         // return true to show it exists
         if (IsInDatabase(Table)) return true;
 
         // check if it is in the Structure
         // returns false because the Structure is the blueprint
-        if (FetchFromStructure(Table) is null) return false;
+        _ = FetchFromStructure(Table);
 
         using var command = __SqliteConnection.CreateCommand();
 
@@ -363,24 +472,14 @@ record DbSqliteContext<TChild>: IDbSqliteContext
     /// <returns></returns>
     static private bool MirrorToDatabase(string Table, string Column)
     {   
-        if (__SqliteConnection is null) return false;
-
         // nothing to do if the Table/Column exists in Database
         var IsInDB = IsInDatabase(Table, Column);
         if (IsInDB is not null && IsInDB.Value._Name && IsInDB.Value._Type) return true;
 
         // check if the Table/Column exist in the Structure
         var json = FetchFromStructure(Table, Column);
-        if (json is null) return false;
         // ensure the Table exists in the Database
         MirrorToDatabase(Table);
-
-        // check if LAYER exists
-        if (! json.ContainsKey(TYPE)) throw new KeyNotFoundException(LAYER);
-        json = (JsonObject) json[TYPE]!;
-        if (! json.ContainsKey(LAYER)) throw new KeyNotFoundException(LAYER);
-        // enter into LAYER
-        var jsonLayer = (JsonObject) json[LAYER]!;
 
         /**
          * 1. table does not exist
@@ -390,10 +489,10 @@ record DbSqliteContext<TChild>: IDbSqliteContext
         {
             // create the Column in the Table
             using var command = __SqliteConnection.CreateCommand();
-
             var dbType = SqliteTypeOf(Table, Column);
 
-            if (jsonLayer.Count == 0) {
+            if (json.ContainsKey(TYPE)) {
+
                 // create only a base table
                 command.CommandText = $"""
                 ALTER TABLE {Table}
@@ -402,22 +501,24 @@ record DbSqliteContext<TChild>: IDbSqliteContext
                 """;
                 Console.WriteLine($"creating normal {Table}/{Column}");
             }
-            else
+            else if (json.ContainsKey(REFERENCE))
             {
-                string refTable = (string) jsonLayer[TABLE]!;
-                string refColumn = (string) jsonLayer[COLUMN]!;
-                if (FetchFromStructure(Table, Column) is null) throw new Exception($"{refTable}, {refColumn}");
+                string? refRaw = JsonSerializer.Deserialize<string>(json[REFERENCE]);
+                if (refRaw is null) throw new NullReferenceException(REFERENCE);
+
+                string[] refSplit = refRaw.Split("+")[1..];
+                refSplit = refSplit.Length == 1 ? [refSplit[0], Id] : refSplit;
+                
                 // ensure the Table exists in the Database
-                MirrorToDatabase(refTable, refColumn);
+                MirrorToDatabase(refSplit[0], refSplit[1]);
+
                 // create only a base table
                 command.CommandText = $"""
                 ALTER TABLE {Table}
                 ADD COLUMN {Column} {dbType}
-                REFERENCES {refTable}({refColumn})
+                REFERENCES {refSplit[0]}({refSplit[1]})
                 ON DELETE CASCADE
                 """;
-                Console.WriteLine($"creating reference {Table}/{Column}");
-                Console.WriteLine(command.CommandText);
             }
             command.ExecuteNonQuery();
 
@@ -436,174 +537,24 @@ record DbSqliteContext<TChild>: IDbSqliteContext
 
 
     /// <summary>
-    /// extract the database structure that implement
-    ///     + IDbSqliteContext
-    ///     + IDbSqliteContextTable
-    ///     + IDbSqliteContextColumn
-    /// </summary>
-    /// 
-    /// <param name="type"></param>
-    /// 
-    /// <returns></returns>
-    static private JsonObject? Structure(Type type)
-    {
-        var json = new JsonObject();
-        
-        json[TYPE] = ExtractType(type);
-        
-        // assert type
-        if (((JsonObject)json[TYPE]!).Count == 0) return null;
-
-        json[PROPERTIES] = ExtractProperties(type);
-        json[FIELDS] = ExtractFields(type);
-        json[NESTEDTYPES] = ExtractNestedTypes(type);
-
-        return json;
-    }
-
-
-    /// <summary>
-    /// checks only for one of the accepted 
-    ///     + IDbSqliteContext
-    ///     + IDbSqliteContextTable
-    ///     + IDbSqliteContextColumn
-    /// </summary>
-    /// <param name="type"></param>
-    /// <returns></returns>
-    static private JsonObject ExtractType(Type type)
-    {
-        var json = new JsonObject();
-
-        if (type.GetInterface(nameof(IDbSqliteContext)) is not null)
-        {
-            json[BASE] = typeof(IDbSqliteContext).Name;
-        }
-
-        if (type.GetInterface(nameof(IDbSqliteContextTable)) is not null)
-        {
-            json[BASE] = typeof(IDbSqliteContextTable).Name;
-        }
-
-        if (type.GetInterface(nameof(IDbSqliteContextColumn)) is not null)
-        {
-            json[BASE] = typeof(IDbSqliteContextColumn).Name;
-            json[LAYER] = ExtractGeneric(type);
-        }
-
-        return json;
-    }
-
-
-    static private JsonObject ExtractGeneric(Type type)
-    {
-        var json = new JsonObject();
-
-        Type? subType;
-        if ((subType = type.GetInterface(typeof(IDbSqliteContextColumnForeign<>).Name)) is not null)
-        {
-            json[GENERIC] = nameof(IDbSqliteContextColumnForeign<,>);
-            json[TABLE] = subType.GetGenericArguments()[0].Name;
-            json[COLUMN] = Id;
-        } else
-        if ((subType = type.GetInterface(typeof(IDbSqliteContextColumnForeign<,>).Name)) is not null)
-        {
-            json[GENERIC] = nameof(IDbSqliteContextColumnForeign<,>);
-            json[TABLE] = subType.GetGenericArguments()[0].Name;
-            json[COLUMN] = subType.GetGenericArguments()[1].Name;
-        }
-
-        return json;
-    }
-
-
-    /// <summary>
-    /// extracts the properties of the class
-    /// </summary>
-    /// 
-    /// <param name="type"></param>
-    /// 
-    /// <returns></returns>
-    static private JsonObject ExtractProperties(Type type)
-    {
-        var json = new JsonObject();
-
-        foreach (var p in type.GetProperties(BindingFlags.Static | BindingFlags.Public | BindingFlags.Instance))
-        {
-            json[p.Name] = JsonSerializer.SerializeToNode(p.GetValue(null)!);
-        }
-
-        return json;
-    }
-
-
-    /// <summary>
-    /// extracts the fields of the class
-    /// </summary>
-    /// 
-    /// <param name="type"></param>
-    /// 
-    /// <returns></returns>
-    static private JsonObject ExtractFields(Type type)
-    {
-        var json = new JsonObject();
-
-        foreach (var f in type.GetFields(BindingFlags.Static | BindingFlags.Public | BindingFlags.Instance))
-        {
-            json[f.Name] = JsonSerializer.SerializeToNode(f.GetValue(null)!);
-        }
-
-        return json;
-    }
-
-
-    /// <summary>
-    /// extracts nested (in this case) records
-    /// which represent either Tables or Columns
-    /// </summary>
-    /// <param name="type"></param>
-    /// <returns></returns>
-    static private JsonObject ExtractNestedTypes(Type type)
-    {
-        var json = new JsonObject();
-
-        foreach (var n in type.GetNestedTypes(BindingFlags.Public | BindingFlags.Instance))
-        {
-            var tmp = Structure(n);
-            if (tmp is not null) {
-                json[n.Name] = Structure(n);
-            }
-        }
-        return json;
-    }
-
-    
-    /// <summary>
     /// a wrapper around fetching the main structure for the database
     /// </summary>
     /// 
     /// <returns></returns>
     static private JsonObject FetchFromStructure()
     {
-        // __JsonStructure should auto populate itself, so it would not be null
-        if (__JsonStructure is null) {
-            throw new ArgumentException(nameof(__JsonStructure), $"uninitialized");
-        }
-
+        // step into the structure
         var json = __JsonStructure;
 
-        // check if it has the NESTEDTYPES container
-        string selfName = typeof(TChild).Name;
-        if (! json.ContainsKey(selfName)) throw new KeyNotFoundException(selfName);
-        // enter the SELF container
-        json = (JsonObject) json[selfName]!;
+        // check if it has the Root of the container
+        string root = typeof(TChild).Name;
+        if (! json.ContainsKey(root)) throw new KeyNotFoundException(root);
+        // enter the Root container
+        json = (JsonObject) json[root]!;
 
-        if (json is not null)
-        {
-            return json;
-        }
-
-        // enter the structure
-        throw new ArgumentNullException(nameof(json));
+        // ...
+        if (json is not null) return json;
+        throw new ArgumentNullException(root);
     }
     
     /// <summary>
@@ -615,37 +566,17 @@ record DbSqliteContext<TChild>: IDbSqliteContext
     /// <returns></returns>
     static private JsonObject FetchFromStructure(string table)
     {
+        // fetch the root structure
         var json = FetchFromStructure();
 
-        // check if it has the NESTEDTYPES container
-        if (! json.ContainsKey(NESTEDTYPES)) {
-            throw new KeyNotFoundException(NESTEDTYPES);
-        }
-        // enter the NESTEDTYPES container
-        json = (JsonObject) json[NESTEDTYPES]!;
-
-        // check if the ${table} is one of its keys
-        if (! json.ContainsKey(table))
-        {
-            throw new KeyNotFoundException(table);
-        }
+        // check if the container has the specified table
+        if (! json.ContainsKey(table)) throw new KeyNotFoundException(table);
         // enter the ${table}
         json = (JsonObject) json[table]!;
 
-        // check if TYPE is defined
-        if (! json.ContainsKey(TYPE)) throw new KeyNotFoundException(TYPE);
-        // enter the TYPE
-        var jsonType = (JsonObject) json[TYPE]!;
-
-        // check if BASE is defined
-        if (! jsonType.ContainsKey(BASE)) throw new KeyNotFoundException(BASE);
-
-        // check if ${table} is truely a IDbSqliteContextTable
-        if ((string)jsonType[BASE]! == nameof(IDbSqliteContextTable))
-        {
-            return json;
-        }
-        throw new ArgumentException(nameof(json), $"type is not {nameof(IDbSqliteContextTable)}");
+        // ...
+        if (json is not null) return json;
+        throw new ArgumentNullException(table);
     }
 
 
@@ -659,14 +590,12 @@ record DbSqliteContext<TChild>: IDbSqliteContext
     /// <returns></returns>
     static private JsonObject FetchFromStructure(string table, string column)
     {
+        // fetch the table structure
         var json = FetchFromStructure(table);
 
-        // check if ${table} has the NESTEDTYPES container
-        if (! json.ContainsKey(NESTEDTYPES)) throw new KeyNotFoundException(NESTEDTYPES);
-        // enter the NESTEDTYPES container
-        json = (JsonObject) json[NESTEDTYPES]!;
-
-        /* special case */
+        /** 
+         * ! special case
+        **/
         if (column == Id) return new JsonObject();
 
         // check if the ${column} is one of its keys
@@ -674,21 +603,9 @@ record DbSqliteContext<TChild>: IDbSqliteContext
         // enter the ${column}
         json = (JsonObject) json[column]!;
 
-        // check if TYPE is defined
-        if (! json.ContainsKey(TYPE)) throw new KeyNotFoundException(TYPE);
-        // enter the TYPE
-        var jsonType = (JsonObject) json[TYPE]!;
-
-        // check if BASE is defined
-        if (! jsonType.ContainsKey(BASE)) throw new KeyNotFoundException(BASE);
-
-        // check if ${column} is truely a IDbSqliteContextColumn
-        if ((string)jsonType[BASE]! == nameof(IDbSqliteContextColumn))
-        {
-            return json;
-        }
-
-        throw new ArgumentException($"{(string)json[BASE]!} is not {nameof(IDbSqliteContextColumn)}", $"{table}/{column}");
+        // ...
+        if (json is not null) return json;
+        throw new ArgumentNullException(column);
     }
 
 
@@ -700,39 +617,31 @@ record DbSqliteContext<TChild>: IDbSqliteContext
     /// <returns></returns>
     static private SqliteType SqliteTypeOf(string table, string column)
     {
-        /* special case */
+        /** 
+         * ! special case
+        **/
         if (column == Id) return SqliteType.Integer;
 
+        // fetch the column structure
         var json = FetchFromStructure(table, column);
 
-        // check if TYPE exists
-        if (! json.ContainsKey(TYPE)) throw new KeyNotFoundException(TYPE);
-        JsonObject jsonII = (JsonObject) json[TYPE]!;
-        // check if LAYER exists
-        if (! jsonII.ContainsKey(LAYER)) throw new KeyNotFoundException(LAYER);
-        // enter into LAYER
-        jsonII = (JsonObject) jsonII[LAYER]!;
-        
-        // where LAYER is defined for FOREIGN columns
-        if (jsonII is not null && jsonII.Count > 0)
+        // check for reference
+        if (json.ContainsKey(REFERENCE))
         {
-            return SqliteTypeOf(
-                (string)jsonII[TABLE]!,
-                (string)jsonII[COLUMN]!
-            );
+            string? refRaw = JsonSerializer.Deserialize<string>(json[REFERENCE]);
+            if (refRaw is null) throw new NullReferenceException(column);
+
+            // split by + and remove trailing info
+            string[] refSplit = refRaw.Split("+")[1..];
+            if (refSplit.Length == 1) return SqliteTypeOf(refSplit[0], Id);
+            else if (refSplit.Length == 2) return SqliteTypeOf(refSplit[0], refSplit[1]);
+        }
+        else if (json.ContainsKey(TYPE))
+        {
+            return json[TYPE].Deserialize<SqliteType>();
         }
 
-        // check if PROPERTIES is defined
-        if (! json.ContainsKey(PROPERTIES)) throw new KeyNotFoundException(PROPERTIES);
-        // enter the PROPERTIES
-        json = (JsonObject) json[PROPERTIES]!;
-
-        // check if DbTypes is defined
-        string targetName = nameof(IDbSqliteContextColumn.DbType);
-        if (! json.ContainsKey(targetName)) throw new KeyNotFoundException($"{targetName} in {table}/{column}");
-        // enter the target
-
-        return JsonSerializer.Deserialize<SqliteType>(json[targetName]!);
+        throw new Exception (column);
     }
 
 
@@ -782,7 +691,6 @@ record DbSqliteContext<TChild>: IDbSqliteContext
     /// 
     /// <typeparam name="T"></typeparam>
     public class Action<T>
-    where T: IDbSqliteContextTable
     {
         // associated table
         private string __Table;
@@ -799,21 +707,19 @@ record DbSqliteContext<TChild>: IDbSqliteContext
 
         public Action()
         {
-            // ensure the sqliteconnection is active
-            if (__SqliteConnection is null) {
-                throw new ArgumentException(nameof(__SqliteConnection), $"no connection for this action");
+            Type tmpType = typeof(T);
+            // validate type
+            if (! tmpType.IsDefined(typeof(DbSqliteContextTableAttribute), false)) {
+                throw new InvalidOperationException(tmpType.Name);
             }
 
-            // get the name of the Table
-            string Table = typeof(T).Name;
-
             // ensure the Table is in the database
-            if (! MirrorToDatabase(Table!)) {
-                throw new ArgumentException(nameof(Table), "mirror failed / action useless");
+            if (! MirrorToDatabase(tmpType.Name!)) {
+                throw new ArgumentException(nameof(tmpType.Name), "mirror failed / action useless");
             }
 
             // associate the table
-            __Table = Table;
+            __Table = tmpType.Name;
 
             __SqliteCommand = __SqliteConnection.CreateCommand();
 
@@ -865,6 +771,27 @@ record DbSqliteContext<TChild>: IDbSqliteContext
             __Readout = readOut;
 
             return this;   
+        }
+
+        /// <summary>
+        /// a function that does absolutely nothing for the Action intrinsically
+        /// 
+        /// possibly an interesting addition to a non-assignment construction
+        /// 
+        /// may be a small pocket that allows setting static column values
+        /// and assigning them directly
+        /// rather than passing the column and values separately
+        /// 
+        /// TODO: ponder upon this
+        /// </summary>
+        /// 
+        /// <param name="whateverIG"></param>
+        /// <returns></returns>
+        public Action<T> EmptyDo(Action whateverIG)
+        {
+            whateverIG();
+
+            return this;
         }
 
         /// <summary>
@@ -926,6 +853,19 @@ record DbSqliteContext<TChild>: IDbSqliteContext
             return this;
         }
 
+
+        private string StripColumnExcess(string? Column)
+        {
+            if (Column is null) throw new NullReferenceException(nameof(Column));
+            string[] tmp = Column.Split(".");
+            Column = tmp[tmp.Length - 1];
+
+            _ = FetchFromStructure(__Table, Column);
+
+            return Column;
+        }
+
+
         /// <summary>
         /// replaces any instance of `Header` with the template in the CommandText and Readout
         /// 
@@ -940,8 +880,7 @@ record DbSqliteContext<TChild>: IDbSqliteContext
         /// <exception cref="ArgumentNullException"></exception>
         /// <exception cref="TypeLoadException"></exception>
         /// <exception cref="KeyNotFoundException"></exception>
-        public Action<T> Parse<T2> (string Header, string Parameter, object? Value)
-        where T2: IDbSqliteContextColumn
+        public Action<T> Parse (object? _, string Header, string Parameter, object? Value, [CallerArgumentExpression("_")] string? Column=null)
         {
             if (PreventInjectionBeforeCommandFlag)
             {
@@ -955,13 +894,13 @@ record DbSqliteContext<TChild>: IDbSqliteContext
             {
                 throw new ArgumentException($"#Table is reserved");
             }
+            Column = StripColumnExcess(Column);
 
             // this prevents the Readout from being called
             // since it would not work after this has passed
             PreventReadoutAfterInjectionFlag = true;
 
             // Column
-            string Column = typeof(T2).Name;
             MirrorToDatabase(__Table, Column);
 
             /* Fill the Header */
@@ -979,8 +918,7 @@ record DbSqliteContext<TChild>: IDbSqliteContext
 
             /* Fill the Parameter */
 
-            SqliteType? sqliteType = SqliteTypeOf(__Table, Column);
-            if (sqliteType is null) throw new ArgumentNullException("sqliteType");
+            SqliteType sqliteType = SqliteTypeOf(__Table, Column);
 
             switch (sqliteType)
             {
@@ -1027,19 +965,17 @@ record DbSqliteContext<TChild>: IDbSqliteContext
         /// <typeparam name="T2"></typeparam>
         /// <param name="Alias"></param>
         /// <returns></returns>
-        public Action<T> Format<T2>(string Alias)
-        where T2: IDbSqliteContextColumn
+        public Action<T> Format (object? _, string Alias, [CallerArgumentExpression("_")] string? Column=null)
         {
             if (PreventInjectionBeforeCommandFlag)
             {
                 throw new ArgumentException($"Command Text not set... use Command");
             }
+            Column = StripColumnExcess(Column);
 
             // this prevents the Readout from being called
             // since it would not work after this has passed
             PreventReadoutAfterInjectionFlag = true;
-
-            string Column = typeof(T2).Name;
 
             __SqliteCommand.CommandText = __SqliteCommand
                 .CommandText
@@ -1065,19 +1001,17 @@ record DbSqliteContext<TChild>: IDbSqliteContext
         /// <exception cref="ArgumentNullException"></exception>
         /// <exception cref="TypeLoadException"></exception>
         /// <exception cref="KeyNotFoundException"></exception>
-        public Action<T> Parameter<T2>(string Alias, object? Value)
-        where T2: IDbSqliteContextColumn
+        public Action<T> Parameter (object? _, string Alias, object? Value, [CallerArgumentExpression("_")] string? Column=null)
         {
             if (PreventInjectionBeforeCommandFlag)
             {
                 throw new ArgumentException($"Command Text not set... use Command");
             }
+            Column = StripColumnExcess(Column);
 
             // this prevents the Readout from being called
             // since it would not work after this has passed
             PreventReadoutAfterInjectionFlag = true;
-
-            string Column = typeof(T2).Name;
 
             // ensure the database has Table/Column
             MirrorToDatabase(__Table, Column);
