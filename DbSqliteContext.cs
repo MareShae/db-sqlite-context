@@ -15,7 +15,10 @@ public class DbSqliteContextForeignAttribute<T>: Attribute {}
 
 
 
-/** implement Architecture as base class for inhertance **/
+/**
+ * implement Architecture as base class for inhertance
+ * despite static, the generic template creates instances for the child records.
+**/
 
 record DbSqliteContext<TChild>
 {
